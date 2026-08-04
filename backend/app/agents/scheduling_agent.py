@@ -1,15 +1,17 @@
-from typing import List, Dict, Any, Optional
 from loguru import logger
-from backend.app.domain.scheduling.orchestrator import SchedulingOrchestrator
+from backend.app.workflows.engine import ExecutiveWorkflowEngine
 
 class SchedulingAgent:
     """
-    Enterprise Refactored Scheduling Agent.
-    Delegates all domain processing, entity extraction, semantic audit guardrails, tool execution,
-    independent verification, and markdown report synthesis directly to the SchedulingOrchestrator.
+    Entry point bridge connecting legacy chatbot interface to the 
+    autonomous multi-agent Executive Operating System workflow engine.
     """
-    def run(self, instruction: str, history: Optional[List[Dict[str, Any]]] = None) -> str:
-        logger.info(f"📅 SCHEDULING AGENT Entry Point: Re-routing to Enterprise SchedulingOrchestrator -> '{instruction}'")
-        return SchedulingOrchestrator.execute_workflow(raw_instruction=instruction, history=history)
+    def __init__(self):
+        self.engine = ExecutiveWorkflowEngine(session_id="chat_ui_session")
+
+    def run(self, user_command: str, session_id: str = "default_session", **kwargs) -> str:
+        logger.info(f"👔 AI EXECUTIVE OPERATING SYSTEM Entry Point: Executing workflow for command -> '{user_command}'")
+        engine = ExecutiveWorkflowEngine(session_id=session_id)
+        return engine.run_workflow(user_command)
 
 scheduling_agent = SchedulingAgent()

@@ -1,3 +1,2 @@
-from backend.app.workflows.business_assistant import MultiAgentOrchestrator
-
-__all__ = ["MultiAgentOrchestrator"]
+from backend.app.workflows.engine import ExecutiveWorkflowEngine
+__all__ = ["ExecutiveWorkflowEngine"]
