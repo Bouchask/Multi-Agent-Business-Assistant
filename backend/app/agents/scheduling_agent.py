@@ -7,6 +7,65 @@ from backend.app.llm.client import llm_client
 from backend.app.llm.prompt_engineer import prompt_engineer
 
 class SchedulingAgent:
+    def _evaluate_semantic_duplication(self, title: str, date_str: str, time_str: str, events: List[Dict[str, Any]], user_prompt: str) -> Dict[str, Any]:
+        """
+        Uses LLM intelligence to evaluate if a requested meeting is a semantic duplicate, typo, or error
+        compared to already scheduled events in the database (e.g., 'Dr. Ayoub' vs 'Ayoub' on same day or short interval).
+        """
+        # If user explicitly authorizes or confirms, bypass check
+        override_words = ["confirm", "force", "insert anyway", "oui", "yes proceed", "ignore warning", "override"]
+        if any(w in user_prompt.lower() for w in override_words):
+            return {"conflict_detected": False, "reasoning": "User provided explicit authorization override."}
+
+        if not events:
+            return {"conflict_detected": False, "reasoning": "No existing calendar events found to conflict."}
+
+        # Filter events around the same date or general timeframe for focused LLM evaluation
+        relevant_events = [e for e in events if date_str in str(e.get("start", "")) or e.get("summary", "").lower() in title.lower()]
+        if not relevant_events and len(events) > 20:
+            relevant_events = events[-10:]
+        elif not relevant_events:
+            relevant_events = events
+
+        eval_prompt = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an elite AI Semantic Deduplication & Calendar Auditor.\n"
+                    "Your objective is to protect an executive's schedule from errors, typos, double-bookings, and redundant entries.\n"
+                    "Analyze the New Meeting Request against the Existing Scheduled Events.\n"
+                    "Examine entities closely: e.g. 'Dr. Ayoub' vs 'Ayoub', 'Dr. Yassin' vs 'Yassine', or scheduling a second meeting with the exact same person within minutes or hours on the same date.\n\n"
+                    "Respond STRICTLY with a valid JSON object matching this schema:\n"
+                    "{\n"
+                    "  \"conflict_detected\": true/false,\n"
+                    "  \"reasoning\": \"Explanation of why this appears to be a duplicate or error (e.g. Dr. Ayoub may be identical to Ayoub already booked at 10:00).\",\n"
+                    "  \"existing_meeting_ref\": \"Summary of existing conflicting meeting\",\n"
+                    "  \"recommended_action\": \"REQUEST_VERIFICATION\" or \"PROCEED\"\n"
+                    "}\n"
+                    "If a potential duplicate person or erroneous tight re-booking is detected on the same date, set conflict_detected to true and recommended_action to REQUEST_VERIFICATION.\n"
+                    "If it is clearly a completely different person or distinct subject without ambiguity, set conflict_detected to false."
+                )
+            },
+            {
+                "role": "user",
+                "content": f"New Meeting Request:\nTitle: {title}\nDate: {date_str}\nTime: {time_str}\n\nExisting Scheduled Events in DB:\n{json.dumps(relevant_events, indent=2)}\n\nEvaluate for semantic deduplication."
+            }
+        ]
+        
+        try:
+            res = llm_client.complete(messages=eval_prompt)
+            content = res.get("content", "{}").strip()
+            if content.startswith("```json"):
+                content = content[7:-3].strip()
+            elif content.startswith("```"):
+                content = content[3:-3].strip()
+            data = json.loads(content)
+            logger.info(f"🧠 Semantic Deduplication Audit Result: {data}")
+            return data
+        except Exception as e:
+            logger.warning(f"Semantic audit error: {e}. Defaulting to safe proceed.")
+            return {"conflict_detected": False}
+
     def run(self, instruction: str, history: Optional[List[Dict[str, Any]]] = None) -> str:
         logger.info(f"📅 SCHEDULING AGENT processing request: '{instruction}'")
         
@@ -17,7 +76,7 @@ class SchedulingAgent:
 
         low_inst = instruction.lower().strip()
         
-        # Step 1: Execute Prompt Engineer to convert keywords ("mots clés") into a Structured Mission Profile!
+        # Step 1: Execute Prompt Engineer to convert keywords into a Structured Mission Profile!
         is_explicit_query = any(pattern in low_inst for pattern in [
             "give programm", "give program", "show programm", "give calander", "show calander", 
             "give me calande", "list meeting", "programme meeting", "programme of meeting", "agenda of",
@@ -45,7 +104,7 @@ class SchedulingAgent:
         action = mission_profile.get("action_type", "QUERY")
         params = mission_profile.get("parameters", {})
         
-        # Format prompt engineer structure inside clean delimiters for native Streamlit Expander UI!
+        # Format prompt engineer structure inside clean delimiters for ChatGPT UI reasoning!
         goals_md = "\n".join([f"  - ✅ **{g}**" for g in mission_profile.get("execution_goals", ["Register schedule", "Sync with Google Calendar"])])
         mission_thinking = (
             f"---THINKING---\n"
@@ -57,13 +116,53 @@ class SchedulingAgent:
             f"---THINKING_END---\n\n"
         )
 
-        # Step 2: Execute tool action (with Google Calendar auto-insert & conflict resolution)
+        # Step 2: Check for Semantic Duplication & execute tool action
         action_notice = ""
         gcal_link = ""
         if action in ["CREATE", "EXECUTE"] or any(w in low_inst for w in ["insert", "add", "book", "schedule"]):
             title = params.get("title", f"Meeting: {instruction[:30]}")
             date_val = params.get("date_str", params.get("date", "2026-08-24"))
             time_val = params.get("time_str", params.get("time", "10:00:00"))
+
+            # --- LLM INTELLIGENT DEDUPLICATION AUDIT ---
+            all_existing = CalendarTool.list_upcoming_meetings(filter_month=None).get("events", [])
+            audit_res = self._evaluate_semantic_duplication(str(title), str(date_val), str(time_val), all_existing, instruction)
+            
+            if audit_res.get("conflict_detected") and audit_res.get("recommended_action") == "REQUEST_VERIFICATION" and not any(w in low_inst for w in ["confirm", "force"]):
+                logger.warning(f"🛡️ Intercepted semantic schedule conflict for '{title}'. Halting insertion for user verification.")
+                
+                dedup_thinking = (
+                    f"---THINKING---\n"
+                    f"**Mission Objective**: `Semantic Schedule Deduplication Audit`  \n"
+                    f"**Domain Architecture**: `SCHEDULING (Intelligent Guardrail)`  \n"
+                    f"**Audit Findings**: `Detected possible duplicate or overlapping participant identity`  \n"
+                    f"**Execution Goals**:  \n"
+                    f"  - ✅ **Intercept potential duplicate calendar registration**  \n"
+                    f"  - ✅ **Prevent Gmail OAuth schedule pollution & double-booking**  \n"
+                    f"  - ✅ **Request executive verification from user**  \n"
+                    f"**Success Criteria**: *Obtain explicit user authorization before creating overlapping event*  \n"
+                    f"---THINKING_END---\n\n"
+                )
+                
+                existing_ref = audit_res.get("existing_meeting_ref", "An existing meeting on this date")
+                reasoning_exp = audit_res.get("reasoning", "The participant name matches or overlaps closely with an existing event.")
+                
+                interactive_warning = (
+                    f"### 🛡️ Intelligent Deduplication & Schedule Audit\n\n"
+                    f"I paused automatic insertion because my semantic analysis detected a potential scheduling error or duplicate entry:\n\n"
+                    f"- **New Request**: `{title}` on **{date_val}** around **{time_val}**\n"
+                    f"- **Existing Record Detected**: `{existing_ref}`\n\n"
+                    f"**🧠 AI Intelligence & Reasoning**:\n"
+                    f"> *{reasoning_exp}*\n\n"
+                    f"---\n"
+                    f"#### ⚡ Action Required:\n"
+                    f"- If this is a separate meeting or intentional re-booking, please reply: **`Confirm insert meeting with {title}`**\n"
+                    f"- If this was a typo or duplicate, no action is needed and your calendar remains clean!"
+                )
+                
+                return dedup_thinking + interactive_warning
+
+            # Proceed with normal DB registration & conflict slot resolution
             add_result = CalendarTool.add_meeting(title=str(title), date_str=str(date_val), time_str=str(time_val))
             
             if add_result.get("success"):
@@ -78,7 +177,7 @@ class SchedulingAgent:
                     action_notice = (
                         f"\n\n---\n"
                         f"#### 📋 Executive Scheduling Report\n"
-                        f"- ⚠️ **Conflict Resolved**: Requested slot (**{conf['original_time']}**) was occupied by **'{conf['conflict_with']}'**.\n"
+                        f"- ⚠️ **Slot Occupied**: Requested slot (**{conf['original_time']}**) was occupied by **'{conf['conflict_with']}'**.\n"
                         f"- ✨ **New Free Slot (*Date Libre*)**: Automatically registered **'{add_result['title']}'** at **{add_result['start']}**.\n"
                         f"- **Google Calendar Integration**: {link_md}{sync_bullet}"
                     )
