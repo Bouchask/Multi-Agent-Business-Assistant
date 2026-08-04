@@ -3,6 +3,7 @@ import re
 from typing import List, Dict, Any, Optional
 from loguru import logger
 from backend.app.tools.calendar_tool import CalendarTool
+from backend.app.tools.gmail_tool import GmailTool
 from backend.app.llm.client import llm_client
 from backend.app.llm.prompt_engineer import prompt_engineer
 
@@ -10,17 +11,15 @@ class SchedulingAgent:
     def _evaluate_semantic_duplication(self, title: str, date_str: str, time_str: str, events: List[Dict[str, Any]], user_prompt: str) -> Dict[str, Any]:
         """
         Uses LLM intelligence to evaluate if a requested meeting is a semantic duplicate, typo, or error
-        compared to already scheduled events in the database (e.g., 'Dr. Ayoub' vs 'Ayoub' on same day or short interval).
+        compared to already scheduled events in the database.
         """
-        # If user explicitly authorizes or confirms, bypass check
-        override_words = ["confirm", "force", "insert anyway", "oui", "yes proceed", "ignore warning", "override"]
+        override_words = ["confirm", "force", "insert anyway", "oui", "yes proceed", "ignore warning", "override", "valide", "valider"]
         if any(w in user_prompt.lower() for w in override_words):
             return {"conflict_detected": False, "reasoning": "User provided explicit authorization override."}
 
         if not events:
             return {"conflict_detected": False, "reasoning": "No existing calendar events found to conflict."}
 
-        # Filter events around the same date or general timeframe for focused LLM evaluation
         relevant_events = [e for e in events if date_str in str(e.get("start", "")) or e.get("summary", "").lower() in title.lower()]
         if not relevant_events and len(events) > 20:
             relevant_events = events[-10:]
@@ -34,11 +33,11 @@ class SchedulingAgent:
                     "You are an elite AI Semantic Deduplication & Calendar Auditor.\n"
                     "Your objective is to protect an executive's schedule from errors, typos, double-bookings, and redundant entries.\n"
                     "Analyze the New Meeting Request against the Existing Scheduled Events.\n"
-                    "Examine entities closely: e.g. 'Dr. Ayoub' vs 'Ayoub', 'Dr. Yassin' vs 'Yassine', or scheduling a second meeting with the exact same person within minutes or hours on the same date.\n\n"
+                    "Examine entities closely: e.g. 'Dr. Ayoub' vs 'Ayoub', 'Dr. Yahya' vs 'Yahya', or scheduling a second meeting with the exact same person within minutes or hours on the same date.\n\n"
                     "Respond STRICTLY with a valid JSON object matching this schema:\n"
                     "{\n"
                     "  \"conflict_detected\": true/false,\n"
-                    "  \"reasoning\": \"Explanation of why this appears to be a duplicate or error (e.g. Dr. Ayoub may be identical to Ayoub already booked at 10:00).\",\n"
+                    "  \"reasoning\": \"Explanation of why this appears to be a duplicate or error.\",\n"
                     "  \"existing_meeting_ref\": \"Summary of existing conflicting meeting\",\n"
                     "  \"recommended_action\": \"REQUEST_VERIFICATION\" or \"PROCEED\"\n"
                     "}\n"
@@ -76,7 +75,7 @@ class SchedulingAgent:
 
         low_inst = instruction.lower().strip()
         
-        # Step 1: Execute Prompt Engineer to convert keywords into a Structured Mission Profile!
+        # Step 1: Execute Prompt Engineer to convert keywords into a Structured Mission Profile with Executable Actions!
         is_explicit_query = any(pattern in low_inst for pattern in [
             "give programm", "give program", "show programm", "give calander", "show calander", 
             "give me calande", "list meeting", "programme meeting", "programme of meeting", "agenda of",
@@ -95,6 +94,7 @@ class SchedulingAgent:
                 "domain": "SCHEDULING",
                 "action_type": "QUERY",
                 "parameters": {"month_filter": month_filt},
+                "required_tool_actions": [{"tool": "CALENDAR_QUERY", "enabled": True, "reason": "Fetch meetings"}],
                 "execution_goals": ["Retrieve relational DB meetings", "Generate Google Calendar detail links"],
                 "success_criteria": "Schedule presented clearly to executive user."
             }
@@ -103,23 +103,50 @@ class SchedulingAgent:
             
         action = mission_profile.get("action_type", "QUERY")
         params = mission_profile.get("parameters", {})
+        tool_actions = mission_profile.get("required_tool_actions", [])
         
         # Format prompt engineer structure inside clean delimiters for ChatGPT UI reasoning!
         goals_md = "\n".join([f"  - ✅ **{g}**" for g in mission_profile.get("execution_goals", ["Register schedule", "Sync with Google Calendar"])])
+        tool_list_md = "\n".join([f"  - ⚡ `[{t.get('tool')}]`: *{t.get('reason')}*" for t in tool_actions if t.get("enabled", True)])
+        if not tool_list_md:
+            tool_list_md = "  - ⚡ `[CALENDAR_EXECUTE]`: *Standard tool workflow*"
+            
         mission_thinking = (
             f"---THINKING---\n"
             f"**Mission Objective**: `{mission_profile.get('mission_title', 'Execute Schedule Directive')}`  \n"
             f"**Domain Architecture**: `{mission_profile.get('domain', 'SCHEDULING')}`  \n"
             f"**Structured Parameters**: `{json.dumps(params)}`  \n"
+            f"**Intelligent Tool Execution Plan**:  \n{tool_list_md}  \n"
             f"**Execution Goals**:  \n{goals_md}  \n"
             f"**Success Criteria**: *{mission_profile.get('success_criteria', 'Verified integration')}*  \n"
             f"---THINKING_END---\n\n"
         )
 
-        # Step 2: Check for Semantic Duplication & execute tool action
+        # Check if LLM explicitly demanded verification before taking action
+        for ta in tool_actions:
+            if ta.get("tool") == "DEMAND_CONFIRMATION" and ta.get("enabled", False) and not any(w in low_inst for w in ["confirm", "oui", "valide", "proceed"]):
+                logger.info("⚡ LLM requested executive verification before executing actions.")
+                verify_msg = (
+                    f"### ❓ Verification & Confirmation Requested\n\n"
+                    f"My AI architectural assessment indicates that we should confirm details before committing this action:\n\n"
+                    f"- **Title**: `{params.get('title')}`\n"
+                    f"- **Date & Time**: `{params.get('date_str')} at {params.get('time_str')}`\n"
+                    f"- **Attendee / Email**: `{params.get('attendee_name') or params.get('attendee_email') or 'Not provided'}`\n\n"
+                    f"**Reason**: *{ta.get('reason', 'Verify accuracy of executive scheduling parameters.')}*\n\n"
+                    f"---\n"
+                    f"#### ⚡ Action Required:\n"
+                    f"Reply **`Confirm`** or **`Oui valider`** to execute database registration and email notification immediately!"
+                )
+                return mission_thinking + verify_msg
+
+        # Step 2: Execute tool action (with Google Calendar auto-insert & conflict resolution)
         action_notice = ""
         gcal_link = ""
-        if action in ["CREATE", "EXECUTE"] or any(w in low_inst for w in ["insert", "add", "book", "schedule"]):
+        email_notice = ""
+        
+        should_insert = action in ["CREATE", "EXECUTE"] or any(t.get("tool") == "CALENDAR_INSERT" and t.get("enabled", False) for t in tool_actions) or any(w in low_inst for w in ["insert", "add", "book", "schedule"])
+        
+        if should_insert:
             title = params.get("title", f"Meeting: {instruction[:30]}")
             date_val = params.get("date_str", params.get("date", "2026-08-24"))
             time_val = params.get("time_str", params.get("time", "10:00:00"))
@@ -128,7 +155,7 @@ class SchedulingAgent:
             all_existing = CalendarTool.list_upcoming_meetings(filter_month=None).get("events", [])
             audit_res = self._evaluate_semantic_duplication(str(title), str(date_val), str(time_val), all_existing, instruction)
             
-            if audit_res.get("conflict_detected") and audit_res.get("recommended_action") == "REQUEST_VERIFICATION" and not any(w in low_inst for w in ["confirm", "force"]):
+            if audit_res.get("conflict_detected") and audit_res.get("recommended_action") == "REQUEST_VERIFICATION" and not any(w in low_inst for w in ["confirm", "force", "valide"]):
                 logger.warning(f"🛡️ Intercepted semantic schedule conflict for '{title}'. Halting insertion for user verification.")
                 
                 dedup_thinking = (
@@ -165,6 +192,29 @@ class SchedulingAgent:
             # Proceed with normal DB registration & conflict slot resolution
             add_result = CalendarTool.add_meeting(title=str(title), date_str=str(date_val), time_str=str(time_val))
             
+            # --- EXECUTE GMAIL NOTIFICATION IF REQUESTED BY LLM OR INSTRUCTED BY USER ---
+            recipient = params.get("attendee_email")
+            should_notify = any(t.get("tool") == "GMAIL_SEND" and t.get("enabled", False) for t in tool_actions) or recipient or any(w in low_inst for w in ["email", "mail", "notify", "notifie", "@"])
+            
+            if should_notify:
+                if not recipient:
+                    # Regex search for email in prompt if LLM parameter extraction missed it
+                    email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', instruction)
+                    recipient = email_match.group(0) if email_match else "dr.yahya@labo.local"
+                
+                subj = f"Meeting Invitation & Confirmation: {add_result.get('title', title)}"
+                body_html = (
+                    f"<h3>Meeting Confirmation</h3>"
+                    f"<p>Dear {params.get('attendee_name', 'Colleague')},</p>"
+                    f"<p>You are officially scheduled for <b>{add_result.get('title', title)}</b>.</p>"
+                    f"<p><b>Date & Time:</b> {add_result.get('start', date_val + ' at ' + time_val)}</p>"
+                    f"<p>Please review your Google Calendar for access details.</p>"
+                )
+                
+                mail_res = GmailTool.send_email(recipient=str(recipient), subject=subj, body=body_html)
+                if mail_res.get("success"):
+                    email_notice = f"\n- 📧 **Intelligent Email Notification**: Automatically sent meeting confirmation email to **`{recipient}`** via *{mail_res.get('delivery_mode')}* (Msg ID: `{mail_res.get('message_id')}`)."
+
             if add_result.get("success"):
                 gcal_link = add_result.get("google_calendar_link", "")
                 is_api_synced = add_result.get("gcal_api_inserted", False)
@@ -179,14 +229,14 @@ class SchedulingAgent:
                         f"#### 📋 Executive Scheduling Report\n"
                         f"- ⚠️ **Slot Occupied**: Requested slot (**{conf['original_time']}**) was occupied by **'{conf['conflict_with']}'**.\n"
                         f"- ✨ **New Free Slot (*Date Libre*)**: Automatically registered **'{add_result['title']}'** at **{add_result['start']}**.\n"
-                        f"- **Google Calendar Integration**: {link_md}{sync_bullet}"
+                        f"- **Google Calendar Integration**: {link_md}{sync_bullet}{email_notice}"
                     )
                 else:
                     action_notice = (
                         f"\n\n---\n"
                         f"#### 📋 Executive Scheduling Report\n"
                         f"- ⚡ **Status**: Successfully registered **'{add_result['title']}'** on **{add_result['start']}**.\n"
-                        f"- **Google Calendar Integration**: {link_md}{sync_bullet}"
+                        f"- **Google Calendar Integration**: {link_md}{sync_bullet}{email_notice}"
                     )
             else:
                 action_notice = f"\n\n⚠️ Could not register DB meeting: {add_result.get('error')}"
