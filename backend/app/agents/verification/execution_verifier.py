@@ -27,8 +27,9 @@ class ExecutionVerifierAgent:
                 report.discrepancies.extend(res.errors or ["Tool reported negative execution state."])
                 continue
 
-            # Requirement 8 & 10: Verify returned meetings against requested Mission Filters
-            if mission.intent in ["QUERY", "QUERY_MEETINGS", "LIST", "LIST_MEETINGS"] or "list_meetings" in res.action_performed.lower():
+            # Requirement 8 & 10: Verify returned meetings against requested Mission Filters ONLY during Query Missions
+            is_query_mission = mission.intent in ["QUERY", "QUERY_MEETINGS", "LIST", "LIST_MEETINGS"] or ("list" in mission.raw_input.lower() and not any(w in mission.raw_input.lower() for w in ["insert", "add", "book", "schedule", "create", "delete", "remove", "supprime"]))
+            if is_query_mission and ("list" in res.action_performed.lower() or "query" in res.action_performed.lower() or "events" in res.data):
                 events = res.data.get("events", [])
                 filters = mission.filters or {}
                 
@@ -53,9 +54,13 @@ class ExecutionVerifierAgent:
                 logger.info("Verification:\nPASS")
                 report.audit_findings.append(f"Verified {len(events)} returned records satisfy mission filters: {filters}")
                 continue
+            elif "events" in res.data or any(w in res.action_performed.upper() for w in ["CHECK", "AUDIT", "LIST"]):
+                # Preliminary availability / conflict checking step during modification missions
+                report.audit_findings.append(f"Verified pre-execution calendar audit check returned {len(res.data.get('events', []))} events for conflict reference.")
+                continue
 
             # Independent verification check against database persistence for modification actions
-            if "Calendar" in res.tool_name or mission.intent in ["CREATE", "DELETE", "UPDATE", "INSERT_MEETING", "DELETE_MEETINGS"]:
+            if "Calendar" in res.tool_name or mission.intent in ["CREATE", "DELETE", "UPDATE", "INSERT", "INSERT_MEETING", "DELETE_MEETINGS"]:
                 title_key = str(mission.entities.get("title", "")) or str(mission.entities.get("participants", [""])[0] if isinstance(mission.entities.get("participants"), list) else "")
                 if "delete" in mission.intent.lower():
                     title_key = "deleted_"

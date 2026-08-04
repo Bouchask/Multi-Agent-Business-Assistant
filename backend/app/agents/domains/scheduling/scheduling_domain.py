@@ -38,6 +38,12 @@ class SchedulingDomainAgent:
                 target_kw = " ".join(params.get("participants"))
             params = {"keyword": target_kw or "all", "date_str": params.get("date")}
             action = "DELETE_MEETINGS"
+        elif action in ["CHECK_CALENDAR", "AUDIT", "CHECK_CONFLICT", "CHECK", "AVAILABILITY", "AVAILABILITY_CHECK"]:
+            target_method = "list_meetings"
+            req_confirm = False
+            # For availability & conflict auditing during scheduling, check by date/time rather than restricting to participant
+            params = {k: v for k, v in params.items() if k in ["date", "month", "year", "start_date", "end_date", "source"]}
+            action = "CHECK_CALENDAR"
         else:
             # Mandated Correct Pattern: Forward exact filters to list_meetings without discarding any fields
             target_method = "list_meetings"

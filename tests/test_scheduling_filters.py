@@ -141,5 +141,12 @@ class TestSchedulingFilters(unittest.TestCase):
         res_empty = MultiAgentOrchestrator.execute("List meetings with Elon Musk")
         self.assertIn("No meetings matching your request were found.", res_empty.get("reply", ""))
 
+    def test_11_insert_meeting_with_pre_execution_audit(self):
+        logger.info("🧪 TEST 11: Insert Meeting with Pre-Execution Availability Audit")
+        res = MultiAgentOrchestrator.execute("insert meet with ayoub in 24-08-2026")
+        self.assertTrue(res.get("success"), "Orchestration must complete successfully without verification exceptions")
+        self.assertNotIn("VerificationFailedError", res.get("reply", ""))
+        self.assertNotIn("Verification failed", res.get("reply", ""))
+
 if __name__ == "__main__":
     unittest.main()

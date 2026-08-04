@@ -35,7 +35,7 @@ class ExecutiveReporterAgent:
         status_badge = "✅ VERIFIED SUCCESS" if (verification.is_verified and not verification.partial_success) else "⚠️ PARTIAL SUCCESS"
         
         # Requirement 5 & 6: Handle query and listing operations strictly from verified tool output
-        is_query = mission.intent in ["QUERY", "QUERY_MEETINGS", "LIST", "LIST_MEETINGS"] or ("list" in mission.raw_input.lower() and not any(w in mission.raw_input.lower() for w in ["delete", "insert", "add", "supprime"]))
+        is_query = mission.intent in ["QUERY", "QUERY_MEETINGS", "LIST", "LIST_MEETINGS"] or ("list" in mission.raw_input.lower() and not any(w in mission.raw_input.lower() for w in ["delete", "insert", "add", "supprime", "create", "schedule", "book", "remove"]))
         
         if is_query:
             evs = []
