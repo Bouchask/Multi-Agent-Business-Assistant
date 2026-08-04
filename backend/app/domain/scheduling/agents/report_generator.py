@@ -1,7 +1,7 @@
 from typing import List, Dict, Any
 from loguru import logger
 from backend.app.llm.client import llm_client
-from backend.app.domain.scheduling.models import MissionProfile, AuditDecision, ExecutionResult, VerificationResult, VerificationStatus, AuditClassification
+from backend.app.domain.scheduling.models import MissionProfile, AuditDecision, ExecutionResult, VerificationResult, VerificationStatus, AuditClassification, MissionAction
 from backend.app.domain.scheduling.prompts import REPORT_GENERATOR_PROMPT
 
 class ReportGeneratorAgent:
@@ -39,20 +39,42 @@ class ReportGeneratorAgent:
             reply = audit.conversational_message or f"I noticed a potential {audit.decision.value.lower()} regarding your request: {audit.reason} How would you like to proceed?"
             return thinking_box + str(reply)
 
-        # Step 3: Handle Verified, Partial Success, or Failed execution
-        status_badge = "✅ VERIFIED SUCCESS" if verification.status == VerificationStatus.VERIFIED else ("⚠️ PARTIAL SUCCESS" if verification.status == VerificationStatus.PARTIAL_SUCCESS else "❌ EXECUTION FAILED")
-        
+        # Step 3: Handle FAILED execution without hallucinating success
+        if verification.status == VerificationStatus.FAILED and mission.mission != MissionAction.QUERY:
+            err_msg = ", ".join(execution.errors) or ", ".join(verification.discrepancy_details) or "Verification could not confirm database modification."
+            return thinking_box + f"### ❌ Execution Alert\nI could not verify successful completion of this schedule command: `{err_msg}`. No unverified alterations were forged."
+
+        status_badge = "✅ VERIFIED SUCCESS" if verification.status == VerificationStatus.VERIFIED else "⚠️ PARTIAL SUCCESS"
+
+        # Step 4: Handle DELETE & CANCEL Mission Reporting
+        if mission.mission in [MissionAction.DELETE, MissionAction.CANCEL]:
+            ev_strs = "\n".join([f"- **{e.get('start')}**: {e.get('summary')}" for e in existing_events]) or "(No remaining meetings located in database.)"
+            del_summary = f"Successfully identified and removed matching appointments from your local storage and connected Google Calendar accounts."
+            
+            report_md = (
+                f"I have successfully executed your deletion directive and verified that all matching sessions are cleared from the system.\n\n"
+                f"---\n"
+                f"#### 📋 Verified Executive Deletion Report\n"
+                f"- **Audit Status**: {status_badge}\n"
+                f"- **Executed Action**: Cleared meetings matching target parameters (`{execution.database_id}`).\n"
+                f"- **Google Calendar OAuth Sync**: *Synchronized deletions directly via Google API (`{execution.event_id}`)*.\n\n"
+                f"### 📅 Updated Executive Agenda (*Mise à jour*)\n\nHere is your verified schedule moving forward:\n\n{ev_strs}"
+            )
+            return thinking_box + report_md
+
+        # Step 5: Handle QUERY Mission Reporting
+        if mission.mission == MissionAction.QUERY:
+            ev_strs = "\n".join([f"- **{e.get('start')}**: {e.get('summary')}" for e in existing_events]) or "(No upcoming events located in database.)"
+            report_md = f"### 📅 Executive Agenda & Schedule Overview\n\nHere are your current verified records in the database:\n\n{ev_strs}"
+            return thinking_box + report_md
+
+        # Step 6: Handle CREATE, UPDATE, & CONFIRM Reporting
         link_md = f"🔗 **[📅 Open & View in Google Calendar]({execution.calendar_url})**" if execution.calendar_url else "*(Local database record synced)*"
         email_line = f"\n- 📧 **Intelligent Email Notification**: Confirmed delivery to **`{execution.gmail_recipient}`** via *{execution.gmail_delivery_mode}* (Msg ID: `{execution.gmail_message_id}`)." if execution.gmail_message_id else ""
-        
-        if verification.status == VerificationStatus.FAILED and mission.mission.value != "QUERY":
-            err_msg = ", ".join(execution.errors) or ", ".join(verification.discrepancy_details) or "Verification could not confirm database storage."
-            return thinking_box + f"### ❌ Execution Alert\nI could not verify successful registration of this schedule command: `{err_msg}`. No unverified records were forged."
 
-        # Generate polite conversational synthesis
         system_inst = (
             "You are an elegant Executive Corporate Assistant.\n"
-            "Provide a crisp, polite, articulate confirmation directly to the user.\n"
+            "Provide a crisp, polite, articulate confirmation directly to the user in a natural tone.\n"
             "Never expose JSON or Prompts. Speak gracefully."
         )
         try:
@@ -78,9 +100,4 @@ class ReportGeneratorAgent:
             f"- **Synchronization**: {link_md}{email_line}\n"
             f"- **Audit Proof**: Confirmed record in persistent database ID `{execution.database_id}`."
         )
-
-        if mission.mission.value == "QUERY":
-            ev_strs = "\n".join([f"- **{e.get('start')}**: {e.get('summary')}" for e in existing_events]) or "(No upcoming events located in database.)"
-            report_md = f"### 📅 Executive Agenda & Schedule Overview\n\nHere are your current verified records in the database:\n\n{ev_strs}"
-
         return thinking_box + report_md

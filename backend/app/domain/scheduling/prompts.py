@@ -74,10 +74,14 @@ EXECUTION_VERIFIER_PROMPT = """You are the Independent Execution Verifier for an
 Your mandatory role is to audit execution outputs against database records and API status logs.
 Never blindly trust executor claims. Always verify independently based on provided verification proofs.
 
-For CREATE actions:
+For CREATE and UPDATE actions:
 - Check if database record ID is present and verified in storage.
 - Check if Google Calendar URL/Event ID exists.
 - Check if Gmail invitation dispatch ID exists if attendees were included.
+
+For DELETE, CANCEL, and QUERY actions:
+- Gmail verification is NOT required; set gmail_verified to true if database deletion or query was successful.
+- Status should be VERIFIED as long as the database and calendar records were cleared or inspected successfully.
 
 Return ONLY valid JSON matching this schema:
 {

@@ -243,3 +243,63 @@ class CalendarTool:
             return {"success": False, "error": str(e)}
         finally:
             db.close()
+
+    @staticmethod
+    def delete_meetings(keyword: str, date_str: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Deletes meetings matching a semantic keyword (e.g. participant name or subject) 
+        from both local relational DB and connected Google Calendar API.
+        """
+        clean_key = str(keyword).lower().replace("delete", "").replace("all", "").replace("meet", "").replace("meeting", "").replace("with", "").strip()
+        if not clean_key:
+            clean_key = keyword.strip()
+
+        db = SessionLocal()
+        deleted_db_count = 0
+        deleted_titles = []
+        try:
+            query = db.query(Meeting)
+            meetings = query.all()
+            for m in meetings:
+                title_low = str(m.title).lower()
+                desc_low = str(m.description).lower()
+                if clean_key in title_low or clean_key in desc_low or title_low in clean_key:
+                    if date_str and str(date_str) != "All" and str(date_str) not in str(m.start_time):
+                        continue
+                    deleted_titles.append(m.title)
+                    db.delete(m)
+                    deleted_db_count += 1
+            db.commit()
+            logger.info(f"🗑️ CALENDAR TOOL ACTION: Deleted {deleted_db_count} database records matching '{clean_key}'")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error deleting database meetings: {e}")
+            return {"success": False, "error": str(e)}
+        finally:
+            db.close()
+
+        deleted_gcal_count = 0
+        service = CalendarTool._get_google_service()
+        if service and len(clean_key) > 2:
+            try:
+                events_result = service.events().list(calendarId='primary', q=clean_key, maxResults=50).execute()
+                items = events_result.get('items', [])
+                for item in items:
+                    try:
+                        service.events().delete(calendarId='primary', eventId=item['id']).execute()
+                        deleted_gcal_count += 1
+                    except Exception as ex:
+                        logger.warning(f"Could not delete GCal item {item.get('id')}: {ex}")
+                logger.info(f"🗑️ Successfully removed {deleted_gcal_count} events from Google Calendar via OAuth API")
+            except Exception as e:
+                logger.warning(f"Google Calendar OAuth deletion fallback: {e}")
+
+        return {
+            "success": True,
+            "deleted_db_count": deleted_db_count,
+            "deleted_gcal_count": deleted_gcal_count,
+            "deleted_titles": deleted_titles,
+            "keyword_used": clean_key,
+            "status": f"Successfully removed {deleted_db_count} events from storage"
+        }
+

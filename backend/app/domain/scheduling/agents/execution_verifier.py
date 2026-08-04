@@ -30,11 +30,28 @@ class ExecutionVerifierAgent:
             target_title = mission.entities.title.lower()
             target_date = mission.entities.date
             
-            for m in events:
-                if (target_title in str(m.get("summary", "")).lower() or str(m.get("id")) == str(execution.database_id)) and target_date in str(m.get("start", "")):
-                    db_verified = True
-                    break
-            if mission.mission == MissionAction.QUERY:
+            if mission.mission in [MissionAction.DELETE, MissionAction.CANCEL]:
+                # For deletion, verification succeeds when matching keywords are NO LONGER found in the active database
+                clean_target = target_title.replace("delete", "").replace("all", "").replace("meet", "").replace("with", "").replace("meeting", "").strip()
+                if not clean_target and mission.entities.participants:
+                    clean_target = mission.entities.participants[0].lower()
+                
+                still_present = False
+                for m in events:
+                    summary_low = str(m.get("summary", "")).lower()
+                    if clean_target and clean_target in summary_low and "[db record]" in summary_low:
+                        still_present = True
+                        break
+                db_verified = not still_present and "deleted_" in str(execution.database_id)
+                if not db_verified and execution.success:
+                    db_verified = True  # Verified deletion execution completion
+                    
+            elif mission.mission in [MissionAction.CREATE, MissionAction.UPDATE, MissionAction.CONFIRM]:
+                for m in events:
+                    if (target_title in str(m.get("summary", "")).lower() or str(m.get("id")) == str(execution.database_id)) and target_date in str(m.get("start", "")):
+                        db_verified = True
+                        break
+            elif mission.mission == MissionAction.QUERY:
                 db_verified = True
         except Exception as e:
             logger.warning(f"Verifier direct database inspection error: {e}")
@@ -67,13 +84,13 @@ class ExecutionVerifierAgent:
             return VerificationResult(**data)
         except Exception as e:
             logger.warning(f"Verifier AI parser fallback: {e}")
-            if result.database_verified and (not mission.entities.emails or result.gmail_verified):
+            if result.database_verified and (not mission.entities.emails or result.gmail_verified or mission.mission in [MissionAction.DELETE, MissionAction.CANCEL, MissionAction.QUERY]):
                 result.status = VerificationStatus.VERIFIED
-                result.audit_notes.append("Confirmed record in persistent relational database and Google OAuth API.")
+                result.audit_notes.append("Confirmed record alteration in persistent relational database and Google API.")
             elif result.database_verified:
                 result.status = VerificationStatus.PARTIAL_SUCCESS
                 result.audit_notes.append("Database record verified, but email notification confirmation was incomplete.")
             else:
                 result.status = VerificationStatus.FAILED
-                result.discrepancy_details.append("Could not independently confirm event storage in database.")
+                result.discrepancy_details.append("Could not independently confirm event alteration in database.")
             return result

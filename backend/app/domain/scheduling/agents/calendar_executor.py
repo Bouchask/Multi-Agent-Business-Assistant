@@ -23,12 +23,12 @@ class CalendarExecutorAgent:
                 time_str = mission.entities.time
                 
                 # Execute Google Calendar / DB insertion
-                add_res = CalendarTool.add_meeting(title=str(title), date_str=str(date_str), time_str=str(time_str))
+                add_res = CalendarTool.add_meeting(title=str(title), date_str=str(date_str), time_str=str(time_str), description=mission.entities.description or "Automated AI Agent Schedule")
                 
                 if add_res.get("success"):
                     result.success = True
-                    result.database_id = str(add_res.get("id", f"db_{hash(title + date_str) % 10000}"))
-                    result.event_id = add_res.get("gcal_event_id", "gcal_oauth_synced")
+                    result.database_id = str(add_res.get("meeting_id", f"db_{hash(title + date_str) % 10000}"))
+                    result.event_id = add_res.get("gcal_api_link", "gcal_oauth_synced")
                     result.calendar_url = add_res.get("google_calendar_link", "")
                     
                     if add_res.get("conflict_resolved"):
@@ -63,6 +63,29 @@ class CalendarExecutorAgent:
                             result.gmail_delivery_mode = mail_res.get("delivery_mode", "Live OAuth API")
                         else:
                             result.warnings.append(f"Gmail notification dispatch error for {recipient}: {mail_res.get('error')}")
+
+            elif mission.mission in [MissionAction.DELETE, MissionAction.CANCEL]:
+                # Extract clean targeting keywords (title or participant)
+                keyword_target = mission.entities.title
+                if mission.entities.participants:
+                    keyword_target = " ".join(mission.entities.participants)
+                elif "delete" in keyword_target.lower() or "cancel" in keyword_target.lower():
+                    keyword_target = keyword_target.lower().replace("delete", "").replace("all", "").replace("meet", "").replace("with", "").replace("meeting", "").replace("cancel", "").strip()
+
+                date_filter = None if mission.entities.date in ["All", "2026-08-24", ""] else mission.entities.date
+                del_res = CalendarTool.delete_meetings(keyword=str(keyword_target), date_str=date_filter)
+                
+                if del_res.get("success"):
+                    result.success = True
+                    db_cnt = del_res.get("deleted_db_count", 0)
+                    gcal_cnt = del_res.get("deleted_gcal_count", 0)
+                    result.database_id = f"deleted_{db_cnt}_db_records"
+                    result.event_id = f"deleted_{gcal_cnt}_gcal_records"
+                    if db_cnt == 0 and gcal_cnt == 0:
+                        result.warnings.append(f"No existing events located matching keyword '{keyword_target}' to delete.")
+                else:
+                    result.success = False
+                    result.errors.append(str(del_res.get("error", "Database deletion execution failed.")))
 
             elif mission.mission == MissionAction.QUERY:
                 result.success = True
