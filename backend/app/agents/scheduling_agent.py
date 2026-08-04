@@ -10,57 +10,70 @@ from backend.app.llm.prompt_engineer import prompt_engineer
 class SchedulingAgent:
     def _evaluate_semantic_duplication(self, title: str, date_str: str, time_str: str, events: List[Dict[str, Any]], user_prompt: str) -> Dict[str, Any]:
         """
-        Uses LLM intelligence to evaluate if a requested meeting is a genuine duplicate on the same date,
-        returning natural conversational guidance instead of rigid boilerplate templates.
+        Runs the elite AI Scheduling Auditor specification to classify whether an incoming meeting
+        is SAFE_NEW_MEETING, DUPLICATE, SIMILAR, RESCHEDULE, or CONFLICT.
         """
         override_words = ["confirm", "force", "insert anyway", "oui", "yes proceed", "ignore warning", "override", "valide", "valider", "yes"]
         if any(w in user_prompt.lower() for w in override_words):
-            return {"conflict_detected": False, "reasoning": "User provided explicit authorization override."}
+            return {"decision": "SAFE_NEW_MEETING", "confidence": 1.0, "reason": "User provided explicit authorization override."}
 
         if not events:
-            return {"conflict_detected": False, "reasoning": "No existing calendar events found."}
-
-        same_date_events = [e for e in events if date_str in str(e.get("start", ""))]
-        
-        if not same_date_events:
-            return {"conflict_detected": False, "reasoning": f"No existing events found on {date_str}. Meetings on different dates are distinct sessions."}
+            return {"decision": "SAFE_NEW_MEETING", "confidence": 1.0, "reason": "No existing calendar events found in system database."}
 
         eval_prompt = [
             {
                 "role": "system",
                 "content": (
-                    "You are an elite, natural Executive Corporate Assistant and Calendar Auditor.\n"
-                    "Your job is to check if a newly requested meeting on a specific date is an accidental duplicate of an already scheduled meeting ON THE SAME DATE.\n"
-                    "CRITICAL INTELLIGENT RULE:\n"
-                    "- Only flag as a duplicate/error if there is an existing meeting with the same person or subject on the EXACT SAME DATE around the same time or if scheduling twice in the same morning/afternoon appears accidental.\n"
-                    "- Never treat meetings on different dates or different weeks as duplicates!\n\n"
-                    "Respond STRICTLY with a valid JSON object matching this schema:\n"
+                    "You are an AI Scheduling Auditor.\n\n"
+                    "You receive:\n"
+                    "1. User request\n"
+                    "2. Existing calendar events\n\n"
+                    "Your task is to determine whether the new meeting is\n"
+                    "• New\n"
+                    "• Duplicate\n"
+                    "• Similar\n"
+                    "• Reschedule\n"
+                    "• Conflict\n"
+                    "• Safe to create\n\n"
+                    "A duplicate means:\n"
+                    "- same participants\n"
+                    "- same purpose\n"
+                    "- same subject\n"
+                    "- same time\n\n"
+                    "A recurring weekly meeting on another date IS NOT a duplicate.\n"
+                    "Different dates do NOT automatically mean duplicate.\n"
+                    "If the meeting occurs on another day, classify it as\n"
+                    "SAFE_NEW_MEETING\n"
+                    "unless the user explicitly says it is replacing another event.\n\n"
+                    "Return ONLY JSON matching this schema:\n"
                     "{\n"
-                    "  \"conflict_detected\": true/false,\n"
-                    "  \"reasoning\": \"Brief thought process behind your determination\",\n"
-                    "  \"conversational_message\": \"If conflict_detected is true, write a natural, polite, helpful message directly to the user explaining that you noticed they already have a meeting with this person at that time/day, and gently ask if they want to schedule an additional session or if it was a duplicate. Keep it conversational like ChatGPT or a smart human assistant—NO robotic headers, NO boilerplate formulas, NO 'Action Required' checklists.\"\n"
+                    '  "decision": "SAFE_NEW_MEETING | DUPLICATE | SIMILAR | RESCHEDULE | CONFLICT",\n'
+                    '  "confidence": 0.97,\n'
+                    '  "reason": "Clear explanation of your determination",\n'
+                    '  "conversational_message": "If DUPLICATE or CONFLICT, write a polite, natural human conversational message explaining what you found and gently asking how to proceed. Otherwise null."\n'
                     "}\n"
+                    "Respond ONLY with the raw JSON object, nothing else."
                 )
             },
             {
                 "role": "user",
-                "content": f"New Meeting Request:\nTitle: {title}\nDate: {date_str}\nTime: {time_str}\n\nExisting Events on this same date ({date_str}):\n{json.dumps(same_date_events, indent=2)}\n\nEvaluate for semantic deduplication on this exact date."
+                "content": f"User Request: '{user_prompt}'\nProposed Parameters -> Title: {title}, Date: {date_str}, Time: {time_str}\n\nExisting Calendar Events in Database:\n{json.dumps(events[:15], indent=2)}\n\nPerform audit and emit JSON decision."
             }
         ]
         
         try:
-            res = llm_client.complete(messages=eval_prompt)
+            res = llm_client.complete(messages=eval_prompt, temperature=0.1)
             content = res.get("content", "{}").strip()
             if content.startswith("```json"):
                 content = content[7:-3].strip()
             elif content.startswith("```"):
                 content = content[3:-3].strip()
             data = json.loads(content)
-            logger.info(f"🧠 Semantic Deduplication Audit Result: {data}")
+            logger.info(f"🧠 AI SCHEDULING AUDITOR DECISION: {data}")
             return data
         except Exception as e:
-            logger.warning(f"Semantic audit error: {e}. Defaulting to safe proceed.")
-            return {"conflict_detected": False}
+            logger.warning(f"AI Scheduling Auditor parsing error: {e}. Reverting to SAFE_NEW_MEETING.")
+            return {"decision": "SAFE_NEW_MEETING", "confidence": 0.90, "reason": f"Fallback due to parser error: {e}"}
 
     def run(self, instruction: str, history: Optional[List[Dict[str, Any]]] = None) -> str:
         logger.info(f"📅 SCHEDULING AGENT processing request: '{instruction}'")
@@ -102,7 +115,6 @@ class SchedulingAgent:
         entities = mission_profile.get("entities", mission_profile.get("parameters", {}))
         reasoning_list = mission_profile.get("reasoning", ["Analyze executive command", "Execute domain workflow"])
         
-        # Format Executive Mission Planner structure inside clean delimiters for ChatGPT Reasoning Dropdown!
         reason_md = "\n".join([f"  - 💭 *{r}*" for r in reasoning_list if r])
         participants = entities.get("participants", [])
         emails = entities.get("emails", [])
@@ -129,7 +141,6 @@ class SchedulingAgent:
             f"---THINKING_END---\n\n"
         )
 
-        # Check if planner demands confirmation before executing action
         if mission_profile.get("requires_confirmation", False) and not any(w in low_inst for w in ["confirm", "oui", "valide", "proceed", "yes"]):
             logger.info("⚡ Executive Mission Planner requested preliminary verification.")
             verify_msg = (
@@ -149,30 +160,35 @@ class SchedulingAgent:
             date_val = entities.get("date", entities.get("date_str", "2026-08-24"))
             time_val = entities.get("time", entities.get("time_str", "10:00:00"))
 
-            # --- LLM INTELLIGENT DEDUPLICATION AUDIT ---
-            if mission_profile.get("requires_duplicate_check", True):
+            # --- AI SCHEDULING AUDITOR EXECUTION ---
+            if mission_profile.get("requires_duplicate_check", True) or mission_profile.get("requires_conflict_check", True):
                 all_existing = CalendarTool.list_upcoming_meetings(filter_month=None).get("events", [])
                 audit_res = self._evaluate_semantic_duplication(str(title), str(date_val), str(time_val), all_existing, instruction)
                 
-                if audit_res.get("conflict_detected") and not any(w in low_inst for w in ["confirm", "force", "valide", "yes"]):
-                    logger.warning(f"🛡️ Intercepted genuine same-day schedule conflict for '{title}' on {date_val}.")
+                decision = audit_res.get("decision", "SAFE_NEW_MEETING")
+                reason_val = audit_res.get("reason", "No semantic conflicts found.")
+                
+                # If DUPLICATE or CONFLICT detected, respond conversationally!
+                if decision in ["DUPLICATE", "CONFLICT"] and not any(w in low_inst for w in ["confirm", "force", "valide", "yes"]):
+                    logger.warning(f"🛡️ AI Scheduling Auditor flagged decision '{decision}' for '{title}' on {date_val}.")
                     
-                    dedup_thinking = (
+                    audit_thinking = (
                         f"---THINKING---\n"
-                        f"**Mission Directive**: `[DEDUPLICATION_AUDIT]` | **Priority**: `HIGH`  \n"
-                        f"**Executive Reasoning**:  \n"
-                        f"  - 💭 *Detected existing event on exact same date ({date_val})*  \n"
-                        f"  - 💭 *Intercepting insertion to prevent calendar double-booking*  \n"
-                        f"**Autonomous Flags**: `[Dup-Check: CONFLICT_DETECTED]`  \n"
+                        f"**Mission Directive**: `[AI_SCHEDULING_AUDITOR]` | **Decision**: `{decision}` (Confidence: `{audit_res.get('confidence', 0.95)}`)  \n"
+                        f"**Audit Reasoning**:  \n"
+                        f"  - 💭 *{reason_val}*  \n"
+                        f"**Autonomous Flags**: `[Status: {decision} - INTERCEPTED]`  \n"
                         f"---THINKING_END---\n\n"
                     )
                     
                     conversational_reply = audit_res.get(
-                        "conversational_message", 
-                        f"I noticed you already have a meeting scheduled with Dr. Yahya on {date_val} around that time. Would you like me to book this as an additional session on that day, or should we update the existing one?"
+                        "conversational_message",
+                        f"I noticed there might be a {decision.lower()} on your schedule: {reason_val} Would you like me to go ahead and book this anyway, or should we adjust the time or details?"
                     )
                     
-                    return dedup_thinking + conversational_reply
+                    return audit_thinking + str(conversational_reply)
+                else:
+                    logger.info(f"✨ AI Scheduling Auditor confirmed '{decision}': {reason_val}")
 
             # Proceed with DB registration & Google Calendar API insertion
             add_result = CalendarTool.add_meeting(title=str(title), date_str=str(date_val), time_str=str(time_val))
