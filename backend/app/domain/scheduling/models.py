@@ -23,6 +23,10 @@ class AuditClassification(str, Enum):
     RESCHEDULE = "RESCHEDULE"
     NEED_CONFIRMATION = "NEED_CONFIRMATION"
 
+class ExecutiveRiskLevel(str, Enum):
+    ROUTINE_SAFE = "ROUTINE_SAFE"
+    SENSITIVE_REQUIRES_CONFIRMATION = "SENSITIVE_REQUIRES_CONFIRMATION"
+
 class VerificationStatus(str, Enum):
     VERIFIED = "VERIFIED"
     PARTIAL_SUCCESS = "PARTIAL_SUCCESS"
@@ -50,8 +54,9 @@ class MissionProfile(BaseModel):
 
 class AuditDecision(BaseModel):
     decision: AuditClassification = Field(default=AuditClassification.SAFE_NEW_MEETING)
+    risk_level: ExecutiveRiskLevel = Field(default=ExecutiveRiskLevel.ROUTINE_SAFE)
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-    reason: str = Field(default="No semantic conflict detected.")
+    reason: str = Field(default="No semantic conflict detected; safe routine operation.")
     conversational_message: Optional[str] = None
     recommended_slot: Optional[Dict[str, str]] = None
 
