@@ -6,6 +6,7 @@ class EntityExtraction(BaseModel):
     objective: str = Field(default="Executive Goal", description="Primary objective")
     intent: str = Field(default="EXECUTE", description="Action intent")
     entities: Dict[str, Any] = Field(default_factory=dict, description="Extracted domain entities")
+    filters: Dict[str, Any] = Field(default_factory=dict, description="Structured query filters preserved across pipeline")
     constraints: List[str] = Field(default_factory=list, description="Execution constraints and safety parameters")
     dependencies: List[str] = Field(default_factory=list, description="Prerequisite conditions")
 
@@ -15,6 +16,7 @@ class StructuredMission(BaseModel):
     objective: str = ""
     intent: str = "EXECUTE"
     entities: Dict[str, Any] = Field(default_factory=dict)
+    filters: Dict[str, Any] = Field(default_factory=dict, description="Single source of truth for execution & query filters")
     constraints: List[str] = Field(default_factory=list)
     dependencies: List[str] = Field(default_factory=list)
     required_domains: List[DomainType] = Field(default_factory=list)

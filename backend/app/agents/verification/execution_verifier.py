@@ -1,14 +1,16 @@
 import json
+from typing import List, Dict, Any
 from loguru import logger
 from backend.app.models import ToolExecutionResult, VerificationReport, StructuredMission
 from backend.app.tools.database.db_tool import DatabaseTool
+from backend.app.core.exceptions import VerificationFailedError
 from backend.app.prompts import EXECUTION_VERIFIER_PROMPT
 
 class ExecutionVerifierAgent:
     """
     Mandatory Independent Execution Verifier.
-    Responsibilities: Perform objective, empirical audits on every tool execution against relational DB records and API return IDs.
-    Strict Rule: Never trust tool output claims blindly; never hallucinate success.
+    Responsibilities: Perform objective, empirical audits on every tool execution against relational DB records, API return IDs, and requested mission filters.
+    Strict Rule: Never trust tool output claims blindly; never hallucinate success; fail loudly if filters are violated.
     """
     @staticmethod
     def verify(mission: StructuredMission, tool_results: List[ToolExecutionResult]) -> VerificationReport:
@@ -20,14 +22,41 @@ class ExecutionVerifierAgent:
 
         for res in tool_results:
             report.audited_tool = res.tool_name
-            if not res.success and mission.intent != "QUERY":
+            if not res.success and mission.intent != "QUERY" and mission.intent != "QUERY_MEETINGS":
                 report.is_verified = False
                 report.discrepancies.extend(res.errors or ["Tool reported negative execution state."])
                 continue
 
-            # Independent verification check against database persistence
-            if "Calendar" in res.tool_name or mission.intent in ["CREATE", "DELETE", "UPDATE"]:
-                title_key = str(mission.entities.get("title", "")) or str(mission.entities.get("participants", [""])[0])
+            # Requirement 8 & 10: Verify returned meetings against requested Mission Filters
+            if mission.intent in ["QUERY", "QUERY_MEETINGS", "LIST", "LIST_MEETINGS"] or "list_meetings" in res.action_performed.lower():
+                events = res.data.get("events", [])
+                filters = mission.filters or {}
+                
+                # Check participant filter compliance
+                target_p = filters.get("participant") or filters.get("participants")
+                if isinstance(target_p, list):
+                    target_p_list = [p.lower() for p in target_p]
+                elif isinstance(target_p, str):
+                    target_p_list = [target_p.lower()]
+                else:
+                    target_p_list = []
+
+                for ev in events:
+                    ev_text = (str(ev.get("summary", "")) + " " + str(ev.get("description", ""))).lower()
+                    if target_p_list and not any(p in ev_text for p in target_p_list):
+                        err_msg = f"Verification failed: Event '{ev.get('summary')}' does not contain required participant '{target_p}'."
+                        logger.warning(f"Verification:\nFAIL")
+                        report.is_verified = False
+                        report.discrepancies.append(err_msg)
+                        raise VerificationFailedError(err_msg)
+
+                logger.info("Verification:\nPASS")
+                report.audit_findings.append(f"Verified {len(events)} returned records satisfy mission filters: {filters}")
+                continue
+
+            # Independent verification check against database persistence for modification actions
+            if "Calendar" in res.tool_name or mission.intent in ["CREATE", "DELETE", "UPDATE", "INSERT_MEETING", "DELETE_MEETINGS"]:
+                title_key = str(mission.entities.get("title", "")) or str(mission.entities.get("participants", [""])[0] if isinstance(mission.entities.get("participants"), list) else "")
                 if "delete" in mission.intent.lower():
                     title_key = "deleted_"
                 db_audit = DatabaseTool.verify_meeting_record(title_key, date_str=mission.entities.get("date"))

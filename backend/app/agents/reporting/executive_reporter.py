@@ -9,7 +9,7 @@ class ExecutiveReporterAgent:
     """
     Executive Reporter & Corporate Synthesizer.
     Responsibilities: Produce concise, professional executive markdown communication based strictly on verified proof.
-    Strict Rule: Never expose JSON, prompts, or internal choreography to the user. Never pretend success without verification.
+    Strict Rule: Never expose JSON, prompts, or internal choreography to the user. Never pretend success without verification. Never hallucinate unreturned events.
     """
     @staticmethod
     def synthesize(mission: StructuredMission, tool_results: List[ToolExecutionResult], verification: VerificationReport) -> str:
@@ -17,6 +17,9 @@ class ExecutiveReporterAgent:
         
         # Transparent reasoning dropdown for frontend inspection
         reasoning_bullets = "\n".join([f"  - 💭 *Analyzed directive: {mission.objective}*" if mission.objective else "  - 💭 *Evaluated executive scheduling priorities.*"])
+        if mission.filters:
+            reasoning_bullets += f"\n  - 🔍 *Active Filters Preserved*: `{mission.filters}`"
+            
         thinking_box = (
             f"---THINKING---\n"
             f"**Mission Directive**: `[{mission.intent}]` | **Status**: `{mission.state.value}`  \n"
@@ -25,23 +28,42 @@ class ExecutiveReporterAgent:
             f"---THINKING_END---\n\n"
         )
 
-        if not verification.is_verified and mission.intent != "QUERY":
+        if not verification.is_verified and mission.intent not in ["QUERY", "QUERY_MEETINGS", "LIST", "LIST_MEETINGS"]:
             err_details = ", ".join(verification.discrepancies) or "Verification could not independently confirm storage alteration."
             return thinking_box + f"### ❌ Execution Alert\nI could not independently verify successful completion of your directive: `{err_details}`. In accordance with executive integrity rules, no unverified records were reported as confirmed."
 
         status_badge = "✅ VERIFIED SUCCESS" if (verification.is_verified and not verification.partial_success) else "⚠️ PARTIAL SUCCESS"
         
-        # Refresh current agenda overview for QUERY or DELETE actions
-        if mission.intent in ["QUERY", "DELETE", "CANCEL"] or "list" in mission.raw_input.lower():
-            cal_data = CalendarTool.list_upcoming_meetings(filter_month=None)
-            evs = cal_data.get("events", [])
-            ev_list_md = "\n".join([f"- **{e.get('start')}**: {e.get('summary')}" for e in evs]) or "(No upcoming meetings recorded in active database.)"
+        # Requirement 5 & 6: Handle query and listing operations strictly from verified tool output
+        is_query = mission.intent in ["QUERY", "QUERY_MEETINGS", "LIST", "LIST_MEETINGS"] or ("list" in mission.raw_input.lower() and not any(w in mission.raw_input.lower() for w in ["delete", "insert", "add", "supprime"]))
+        
+        if is_query:
+            evs = []
+            for tr in tool_results:
+                if "events" in tr.data:
+                    evs.extend(tr.data.get("events", []))
             
-            if mission.intent in ["DELETE", "CANCEL"]:
-                intro = f"I have executed your deletion directive and verified that all matching sessions are cleared from storage and synchronized accounts.\n\n---\n#### 📋 Verified Executive Deletion Report\n- **Status**: {status_badge}\n- **Action**: Cleared target records matching your specified criteria.\n\n### 📅 Updated Executive Agenda (*Mise à jour*)\n\nHere is your verified schedule moving forward:\n\n{ev_list_md}"
-                return thinking_box + intro
-            elif mission.intent == "QUERY":
-                return thinking_box + f"### 📅 Executive Agenda & Schedule Overview\n\nHere are your current verified records in the database and Google Calendar:\n\n{ev_list_md}"
+            # Requirement 6: If no meetings match, return exact mandated statement without displaying full calendar
+            if not evs:
+                return thinking_box + "No meetings matching your request were found."
+                
+            # Requirement 5: Only describe events returned by Calendar Tool
+            ev_list_md = "\n".join([f"- **{e.get('start')}**: {e.get('summary')}" for e in evs])
+            return thinking_box + f"### 📅 Verified Filtered Agenda\n\nHere are the scheduled sessions matching your exact parameters:\n\n{ev_list_md}"
+
+        # Handle deletions and cancellations
+        if mission.intent in ["DELETE", "CANCEL", "DELETE_MEETINGS"]:
+            updated_events = CalendarTool.list_meetings(status="upcoming", limit=10).get("events", [])
+            ev_list_md = "\n".join([f"- **{e.get('start')}**: {e.get('summary')}" for e in updated_events]) or "(No upcoming meetings remaining in schedule.)"
+            intro = (
+                f"I have executed your deletion directive and verified that matching records have been removed from storage and synchronized accounts.\n\n"
+                f"---\n"
+                f"#### 📋 Verified Executive Deletion Report\n"
+                f"- **Status**: {status_badge}\n"
+                f"- **Action**: Cleared target records matching your specified criteria (`{mission.filters or 'all'}`).\n\n"
+                f"### 📅 Updated Executive Agenda (*Mise à jour*)\n\nHere is your verified schedule moving forward:\n\n{ev_list_md}"
+            )
+            return thinking_box + intro
 
         # Synthesize conversational summary for CREATE and UPDATE actions
         gcal_url = ""

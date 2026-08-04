@@ -1,4 +1,5 @@
 import time
+import json
 from typing import Dict, Any, List, Optional
 from loguru import logger
 
@@ -105,7 +106,13 @@ class ExecutiveWorkflowEngine:
                             elif exec_req.action_type in ["DELETE", "CANCEL", "DELETE_MEETINGS"]:
                                 res_payload = tool_cls.delete_meetings(keyword=exec_req.parameters.get("keyword", ""), date_str=exec_req.parameters.get("date_str"))
                             else:
-                                res_payload = {"success": True, "action": "LIST_QUERY", "events": tool_cls.list_upcoming_meetings().get("events", [])}
+                                # Mandated Architecture: Preserve filters and execute list_meetings directly
+                                logger.info(f"Mission Filters:\n{json.dumps(mission.filters, indent=2)}")
+                                logger.info(f"Executed Query:\n{json.dumps(exec_req.parameters, indent=2)}")
+                                list_res = tool_cls.list_meetings(**exec_req.parameters)
+                                ret_count = list_res.get("count", len(list_res.get("events", [])))
+                                logger.info(f"Returned:\n{ret_count} meetings")
+                                res_payload = {"success": True, "action": exec_req.action_type, "count": ret_count, "events": list_res.get("events", [])}
                         elif exec_req.target_tool == "GmailTool":
                             res_payload = tool_cls.send_email(recipient=exec_req.parameters.get("recipient", "user@local.domain"), subject=exec_req.parameters.get("subject", "Invite"), body=exec_req.parameters.get("body", ""))
                         elif exec_req.target_tool == "WebSearchTool":
