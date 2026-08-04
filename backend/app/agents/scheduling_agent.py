@@ -10,7 +10,7 @@ from backend.app.llm.prompt_engineer import prompt_engineer
 class SchedulingAgent:
     def _evaluate_semantic_duplication(self, title: str, date_str: str, time_str: str, events: List[Dict[str, Any]], user_prompt: str) -> Dict[str, Any]:
         """
-        Uses LLM intelligence to evaluate if a requested meeting is a genuine duplicate or scheduling error,
+        Uses LLM intelligence to evaluate if a requested meeting is a genuine duplicate on the same date,
         returning natural conversational guidance instead of rigid boilerplate templates.
         """
         override_words = ["confirm", "force", "insert anyway", "oui", "yes proceed", "ignore warning", "override", "valide", "valider", "yes"]
@@ -20,10 +20,8 @@ class SchedulingAgent:
         if not events:
             return {"conflict_detected": False, "reasoning": "No existing calendar events found."}
 
-        # Focus strictly on events on the EXACT SAME DATE or immediately overlapping interval
         same_date_events = [e for e in events if date_str in str(e.get("start", ""))]
         
-        # If there are NO events on the exact same date, it is NOT a duplicate (e.g. weekly meetings on different dates are completely normal!)
         if not same_date_events:
             return {"conflict_detected": False, "reasoning": f"No existing events found on {date_str}. Meetings on different dates are distinct sessions."}
 
@@ -74,7 +72,7 @@ class SchedulingAgent:
 
         low_inst = instruction.lower().strip()
         
-        # Step 1: Execute Prompt Engineer to structure mission profile
+        # Step 1: Execute Executive Scheduling Mission Planner
         is_explicit_query = any(pattern in low_inst for pattern in [
             "give programm", "give program", "show programm", "give calander", "show calander", 
             "give me calande", "list meeting", "programme meeting", "programme of meeting", "agenda of",
@@ -89,109 +87,119 @@ class SchedulingAgent:
             elif "august" in low_inst or "08/" in low_inst:
                 month_filt = 8
             mission_profile = {
-                "mission_title": "Schedule Inspection & Agenda Inquiry",
-                "domain": "SCHEDULING",
-                "action_type": "QUERY",
-                "parameters": {"month_filter": month_filt},
-                "required_tool_actions": [{"tool": "CALENDAR_QUERY", "enabled": True, "reason": "Fetch meetings"}],
-                "execution_goals": ["Retrieve relational DB meetings", "Generate Google Calendar detail links"],
-                "success_criteria": "Schedule presented clearly to executive user."
+                "mission": "QUERY",
+                "requires_calendar_lookup": True,
+                "requires_duplicate_check": False,
+                "requires_conflict_check": False,
+                "priority": "NORMAL",
+                "entities": {"date": f"Month {month_filt}" if month_filt else "All"},
+                "reasoning": ["Executive user requested schedule overview and agenda details"]
             }
         else:
             mission_profile = prompt_engineer.generate_mission_structure(raw_prompt=instruction, domain="SCHEDULING")
             
-        action = mission_profile.get("action_type", "QUERY")
-        params = mission_profile.get("parameters", {})
-        tool_actions = mission_profile.get("required_tool_actions", [])
+        mission = mission_profile.get("mission", mission_profile.get("action_type", "QUERY"))
+        entities = mission_profile.get("entities", mission_profile.get("parameters", {}))
+        reasoning_list = mission_profile.get("reasoning", ["Analyze executive command", "Execute domain workflow"])
         
-        goals_md = "\n".join([f"  - ✅ **{g}**" for g in mission_profile.get("execution_goals", ["Register schedule", "Sync with Google Calendar"])])
-        tool_list_md = "\n".join([f"  - ⚡ `[{t.get('tool')}]`: *{t.get('reason')}*" for t in tool_actions if t.get("enabled", True)])
-        if not tool_list_md:
-            tool_list_md = "  - ⚡ `[CALENDAR_EXECUTE]`: *Standard tool workflow*"
+        # Format Executive Mission Planner structure inside clean delimiters for ChatGPT Reasoning Dropdown!
+        reason_md = "\n".join([f"  - 💭 *{r}*" for r in reasoning_list if r])
+        participants = entities.get("participants", [])
+        emails = entities.get("emails", [])
+        if isinstance(participants, list):
+            part_str = ", ".join(participants) if participants else "None specified"
+        else:
+            part_str = str(participants)
             
+        if isinstance(emails, list):
+            email_str = ", ".join(emails) if emails else (entities.get("attendee_email") or "None specified")
+        else:
+            email_str = str(emails)
+
         mission_thinking = (
             f"---THINKING---\n"
-            f"**Mission Objective**: `{mission_profile.get('mission_title', 'Execute Schedule Directive')}`  \n"
-            f"**Domain Architecture**: `{mission_profile.get('domain', 'SCHEDULING')}`  \n"
-            f"**Structured Parameters**: `{json.dumps(params)}`  \n"
-            f"**Intelligent Tool Execution Plan**:  \n{tool_list_md}  \n"
-            f"**Execution Goals**:  \n{goals_md}  \n"
-            f"**Success Criteria**: *{mission_profile.get('success_criteria', 'Verified integration')}*  \n"
+            f"**Mission Directive**: `[{mission}]` | **Priority**: `{mission_profile.get('priority', 'NORMAL')}`  \n"
+            f"**Executive Reasoning**:  \n{reason_md}  \n"
+            f"**Extracted Entities**:  \n"
+            f"  - **Title**: `{entities.get('title', 'Meeting')}`  \n"
+            f"  - **Participants**: `{part_str}`  \n"
+            f"  - **Emails**: `{email_str}`  \n"
+            f"  - **Date & Time**: `{entities.get('date', entities.get('date_str', '2026-08-24'))} @ {entities.get('time', entities.get('time_str', '10:00:00'))}` (Duration: `{entities.get('duration', '60')}m`)  \n"
+            f"**Autonomous Flags**: `[Lookup: {mission_profile.get('requires_calendar_lookup', True)}] [Dup-Check: {mission_profile.get('requires_duplicate_check', True)}] [Conflict: {mission_profile.get('requires_conflict_check', True)}]`  \n"
             f"---THINKING_END---\n\n"
         )
 
-        # Check if LLM explicitly demanded verification in tool actions
-        for ta in tool_actions:
-            if ta.get("tool") == "DEMAND_CONFIRMATION" and ta.get("enabled", False) and not any(w in low_inst for w in ["confirm", "oui", "valide", "proceed", "yes"]):
-                logger.info("⚡ LLM requested executive verification before executing actions.")
-                verify_msg = (
-                    f"Before I finalize this event on your calendar and dispatch the notification email, could you confirm if these details look correct for `{params.get('title')}` on `{params.get('date_str')}` at `{params.get('time_str')}`? Simply reply yes or confirm to proceed."
-                )
-                return mission_thinking + verify_msg
+        # Check if planner demands confirmation before executing action
+        if mission_profile.get("requires_confirmation", False) and not any(w in low_inst for w in ["confirm", "oui", "valide", "proceed", "yes"]):
+            logger.info("⚡ Executive Mission Planner requested preliminary verification.")
+            verify_msg = (
+                f"Before I finalize this event and send out notifications, could you please confirm if you would like me to schedule `{entities.get('title')}` on `{entities.get('date', 'specified date')}` at `{entities.get('time', 'specified time')}`? Simply reply 'yes' or 'confirm' to execute."
+            )
+            return mission_thinking + verify_msg
 
         # Step 2: Execute tool action
         action_notice = ""
         gcal_link = ""
         email_notice = ""
         
-        should_insert = action in ["CREATE", "EXECUTE"] or any(t.get("tool") == "CALENDAR_INSERT" and t.get("enabled", False) for t in tool_actions) or any(w in low_inst for w in ["insert", "add", "book", "schedule"])
+        should_insert = mission in ["CREATE", "UPDATE", "CONFIRM"] or any(w in low_inst for w in ["insert", "add", "book", "schedule"])
         
         if should_insert:
-            title = params.get("title", f"Meeting: {instruction[:30]}")
-            date_val = params.get("date_str", params.get("date", "2026-08-24"))
-            time_val = params.get("time_str", params.get("time", "10:00:00"))
+            title = entities.get("title", f"Meeting: {instruction[:30]}")
+            date_val = entities.get("date", entities.get("date_str", "2026-08-24"))
+            time_val = entities.get("time", entities.get("time_str", "10:00:00"))
 
             # --- LLM INTELLIGENT DEDUPLICATION AUDIT ---
-            all_existing = CalendarTool.list_upcoming_meetings(filter_month=None).get("events", [])
-            audit_res = self._evaluate_semantic_duplication(str(title), str(date_val), str(time_val), all_existing, instruction)
-            
-            # If genuine same-date duplicate is detected, respond with pure LLM conversational elegance!
-            if audit_res.get("conflict_detected") and not any(w in low_inst for w in ["confirm", "force", "valide", "yes"]):
-                logger.warning(f"🛡️ Intercepted genuine same-day schedule conflict for '{title}' on {date_val}.")
+            if mission_profile.get("requires_duplicate_check", True):
+                all_existing = CalendarTool.list_upcoming_meetings(filter_month=None).get("events", [])
+                audit_res = self._evaluate_semantic_duplication(str(title), str(date_val), str(time_val), all_existing, instruction)
                 
-                dedup_thinking = (
-                    f"---THINKING---\n"
-                    f"**Mission Objective**: `Semantic Schedule Deduplication Audit`  \n"
-                    f"**Domain Architecture**: `SCHEDULING (Intelligent Guardrail)`  \n"
-                    f"**Audit Findings**: `Detected existing meeting on exact same date ({date_val})`  \n"
-                    f"**Execution Goals**:  \n"
-                    f"  - ✅ **Prevent same-day schedule overlap & double-booking**  \n"
-                    f"  - ✅ **Provide natural conversational verification inquiry**  \n"
-                    f"**Success Criteria**: *Ensure schedule integrity through intelligent conversational interaction*  \n"
-                    f"---THINKING_END---\n\n"
-                )
-                
-                conversational_reply = audit_res.get(
-                    "conversational_message", 
-                    f"I noticed you already have a meeting scheduled with Dr. Yahya on {date_val} around that time. Would you like me to book this as an additional meeting on the same day, or should we update the existing one?"
-                )
-                
-                return dedup_thinking + conversational_reply
+                if audit_res.get("conflict_detected") and not any(w in low_inst for w in ["confirm", "force", "valide", "yes"]):
+                    logger.warning(f"🛡️ Intercepted genuine same-day schedule conflict for '{title}' on {date_val}.")
+                    
+                    dedup_thinking = (
+                        f"---THINKING---\n"
+                        f"**Mission Directive**: `[DEDUPLICATION_AUDIT]` | **Priority**: `HIGH`  \n"
+                        f"**Executive Reasoning**:  \n"
+                        f"  - 💭 *Detected existing event on exact same date ({date_val})*  \n"
+                        f"  - 💭 *Intercepting insertion to prevent calendar double-booking*  \n"
+                        f"**Autonomous Flags**: `[Dup-Check: CONFLICT_DETECTED]`  \n"
+                        f"---THINKING_END---\n\n"
+                    )
+                    
+                    conversational_reply = audit_res.get(
+                        "conversational_message", 
+                        f"I noticed you already have a meeting scheduled with Dr. Yahya on {date_val} around that time. Would you like me to book this as an additional session on that day, or should we update the existing one?"
+                    )
+                    
+                    return dedup_thinking + conversational_reply
 
-            # Proceed with normal DB registration & conflict slot resolution
+            # Proceed with DB registration & Google Calendar API insertion
             add_result = CalendarTool.add_meeting(title=str(title), date_str=str(date_val), time_str=str(time_val))
             
             # --- EXECUTE GMAIL NOTIFICATION ---
-            recipient = params.get("attendee_email")
-            should_notify = any(t.get("tool") == "GMAIL_SEND" and t.get("enabled", False) for t in tool_actions) or recipient or any(w in low_inst for w in ["email", "mail", "notify", "notifie", "@"])
+            recipients = entities.get("emails", [])
+            if not recipients and entities.get("attendee_email"):
+                recipients = [entities.get("attendee_email")]
+            elif not recipients:
+                email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', instruction)
+                if email_match:
+                    recipients = [email_match.group(0)]
             
-            if should_notify:
-                if not recipient:
-                    email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', instruction)
-                    recipient = email_match.group(0) if email_match else "dr.yahya@labo.local"
-                
-                subj = f"Meeting Invitation & Confirmation: {add_result.get('title', title)}"
-                body_html = (
-                    f"<h3>Meeting Confirmation</h3>"
-                    f"<p>Dear {params.get('attendee_name', 'Colleague')},</p>"
-                    f"<p>You are officially scheduled for <b>{add_result.get('title', title)}</b>.</p>"
-                    f"<p><b>Date & Time:</b> {add_result.get('start', date_val + ' at ' + time_val)}</p>"
-                    f"<p>Please review your Google Calendar for access details.</p>"
-                )
-                
-                mail_res = GmailTool.send_email(recipient=str(recipient), subject=subj, body=body_html)
-                if mail_res.get("success"):
-                    email_notice = f"\n- 📧 **Intelligent Email Notification**: Automatically sent meeting confirmation email to **`{recipient}`** via *{mail_res.get('delivery_mode')}* (Msg ID: `{mail_res.get('message_id')}`)."
+            if recipients:
+                for recipient in recipients:
+                    subj = f"Meeting Invitation & Confirmation: {add_result.get('title', title)}"
+                    body_html = (
+                        f"<h3>Meeting Confirmation</h3>"
+                        f"<p>Dear {part_str if part_str != 'None specified' else 'Colleague'},</p>"
+                        f"<p>You are officially scheduled for <b>{add_result.get('title', title)}</b>.</p>"
+                        f"<p><b>Date & Time:</b> {add_result.get('start', date_val + ' at ' + time_val)}</p>"
+                        f"<p>Please review your Google Calendar for access details.</p>"
+                    )
+                    
+                    mail_res = GmailTool.send_email(recipient=str(recipient), subject=subj, body=body_html)
+                    if mail_res.get("success"):
+                        email_notice += f"\n- 📧 **Intelligent Email Notification**: Automatically sent meeting confirmation email to **`{recipient}`** via *{mail_res.get('delivery_mode')}* (Msg ID: `{mail_res.get('message_id')}`)."
 
             if add_result.get("success"):
                 gcal_link = add_result.get("google_calendar_link", "")
@@ -220,11 +228,7 @@ class SchedulingAgent:
                 action_notice = f"\n\n⚠️ Could not register DB meeting: {add_result.get('error')}"
 
         # Step 3: Fetch updated calendar events & generate natural conversational confirmation
-        month_filt = params.get("month_filter")
-        if not month_filt and ("month 8" in low_inst or "august" in low_inst):
-            month_filt = 8
-            
-        calendar_data = CalendarTool.list_upcoming_meetings(filter_month=month_filt)
+        calendar_data = CalendarTool.list_upcoming_meetings(filter_month=None)
         events = calendar_data.get("events", [])
         events_formatted = []
         for e in events:
@@ -252,7 +256,7 @@ class SchedulingAgent:
         
         prompt = [
             {"role": "system", "content": system_instructions},
-            {"role": "user", "content": f"{context_str}User Directive: {instruction}\nAction Type: {action}\n\nLive Database Overview:\n{events_str}{action_notice}\n\nProvide a natural, polite confirmation."}
+            {"role": "user", "content": f"{context_str}User Directive: {instruction}\nMission Type: {mission}\n\nLive Database Overview:\n{events_str}{action_notice}\n\nProvide a natural, polite confirmation."}
         ]
         res = llm_client.complete(messages=prompt)
         reply = res.get("content", "Schedule inspection completed.")
