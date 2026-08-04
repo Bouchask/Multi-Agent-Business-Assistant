@@ -7,6 +7,9 @@ from backend.app.agents.domains import SchedulingDomainAgent, EmailDomainAgent, 
 from backend.app.agents.verification import ExecutionVerifierAgent
 from backend.app.agents.reporting import ExecutiveReporterAgent
 
+# Backwards compatibility bridges for existing tool/test scripts
+from backend.app.agents.scheduling_agent import scheduling_agent
+
 __all__ = [
     "ExecutiveSupervisorAgent",
     "MissionPlannerAgent",
@@ -16,5 +19,6 @@ __all__ = [
     "EmailDomainAgent",
     "ResearchDomainAgent",
     "ExecutionVerifierAgent",
-    "ExecutiveReporterAgent"
+    "ExecutiveReporterAgent",
+    "scheduling_agent"
 ]
